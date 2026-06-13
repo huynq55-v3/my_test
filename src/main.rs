@@ -16,15 +16,17 @@ fn to_binary_vec(val: u64, num_bits: usize) -> Vec<f32> {
     vec
 }
 
-/// Generates Collatz transition pairs: (n_t, n_{t+1})
+/// Generates Mersenne Collatz transition pairs: (n_t, n_{t+1})
+/// Starting numbers are Mersenne numbers 2^k - 1 with k chosen randomly in [2, 32]
 fn generate_dataset(num_samples: usize, num_steps: usize, num_bits: usize, device: &Device) -> Result<(Tensor, Tensor)> {
     let mut rng = rand::thread_rng();
     let mut x_t_data = Vec::with_capacity(num_samples * num_steps * num_bits);
     let mut x_next_data = Vec::with_capacity(num_samples * num_steps * num_bits);
 
     for _ in 0..num_samples {
-        // Start from a random number in [2, 2^32] to avoid overflow and trivial 0/1 states
-        let mut val = rng.gen_range(2..4_294_967_296u64);
+        // Sinh số Mersenne: 2^k - 1 với k thuộc [2, 32]
+        let k = rng.gen_range(2..=32);
+        let mut val = (1u64 << k) - 1;
         for _ in 0..num_steps {
             let next_val = if val % 2 == 0 {
                 val / 2
@@ -71,7 +73,7 @@ impl Encoder {
         let x = x.relu()?;
         let x = self.linear3.forward(&x)?;
         
-        // CÚ HACK: Chuẩn hóa L2 về đường tròn đơn vị (Unit Circle) để tránh suy biến về [0,0]
+        // CÚ HACK: Chuẩn hóa L2 về đường tròn đơn vị để tránh suy biến về [0,0]
         let norm = x.sqr()?.sum_keepdim(1)?.sqrt()?;
         let x = x.broadcast_div(&(norm + 1e-8)?)?;
         Ok(x)
@@ -169,7 +171,7 @@ impl CollatzHackerModel {
         Ok((x_t_recon, x_next_recon, z_t_pred, z_next, z_t))
     }
 
-    /// Dịch ngược trọng số của Encoder (Patch 4: Weights Reverse Engineering)
+    /// Dịch ngược trọng số của Encoder (Weights Reverse Engineering)
     /// Tính toán ma trận trọng số hiệu dụng W_eff = W3 * W2 * W1 (kích thước [2, 64])
     /// để tìm ra các bit đầu vào nào có ảnh hưởng mạnh nhất đến tọa độ latent (X, Y)
     fn print_weights_analysis(&self) -> Result<()> {
@@ -238,7 +240,7 @@ fn mse_loss(pred: &Tensor, target: &Tensor) -> Result<Tensor> {
     Ok(mse)
 }
 
-/// Hàm phạt phân tán (Patch 2: Repulsion/Contrastive Loss) để tránh AI tụ thành một cụm rác
+/// Hàm phạt phân tán (Contrastive/Repulsion Loss) để tránh AI tụ thành một cụm rác
 fn repulsion_loss(z: &Tensor) -> Result<Tensor> {
     let batch_size = z.dim(0)?;
     if batch_size <= 1 {
@@ -276,7 +278,7 @@ fn compute_loss(
     // Dynamic Loss
     let dynamic_loss = mse_loss(&z_t_pred, &z_next)?;
 
-    // Repulsion Loss (Patch 2)
+    // Repulsion Loss
     let rep_loss = repulsion_loss(&z_t)?;
 
     // Total Loss = Recon + alpha * Dyn + beta * Rep
@@ -331,20 +333,20 @@ fn generate_html_report(report: &TrainingReport, filepath: &str) -> Result<()> {
 
 fn main() -> Result<()> {
     let device = Device::cuda_if_available(0).unwrap_or(Device::Cpu);
-    println!("=== Collatz Latent Space Autoencoder Probe (Rust Version) ===");
+    println!("=== Collatz Latent Space Autoencoder Probe (Mersenne Experiment) ===");
     println!("Device: {:?}", device);
 
     // Hyperparameters
-    let num_samples = 5000; // Dataset size (Patch 3)
+    let num_samples = 5000;
     let num_steps = 20;
     let num_bits = 64;
     let batch_size = 512;
-    let epochs = 150; // Increased epochs for SGD convergence
-    let lr = 0.02; // Learning rate for SGD (Patch 3)
+    let epochs = 150;
+    let lr = 0.02; // SGD lr
     let alpha = 0.5f32; // Tỉ trọng của loss động lực học
-    let beta = 0.5f32;  // Tỉ trọng của loss phân tán (Patch 2)
+    let beta = 0.5f32;  // Tỉ trọng của loss phân tán
 
-    println!("Generating Collatz sequences dataset...");
+    println!("Generating Mersenne Collatz sequences dataset...");
     let (x_t, x_next) = generate_dataset(num_samples, num_steps, num_bits, &device)?;
     let dataset_size = x_t.dim(0)?;
     println!("Dataset generated. Total transitions: {}", dataset_size);
@@ -354,7 +356,7 @@ fn main() -> Result<()> {
     let vs = VarBuilder::from_varmap(&varmap, DType::F32, &device);
     let model = CollatzHackerModel::new(vs)?;
 
-    // Config Optimizer (Patch 3: SGD thuần chủng)
+    // Config Optimizer (SGD thuần chủng)
     let mut opt = candle_nn::SGD::new(varmap.all_vars(), lr)?;
 
     // History log
@@ -420,9 +422,9 @@ fn main() -> Result<()> {
     let final_theta = model.get_theta()?.to_vec0::<f32>()?.to_degrees();
     println!("Training completed! Final Theta: {:.2}°", final_theta);
 
-    // Generate trajectories for visualization
-    println!("Generating test trajectories...");
-    let test_starts = vec![27u64, 12u64, 1000u64, 7u64, 8521u64];
+    // Generate trajectories for Mersenne test numbers: 3, 7, 15, 31, 63
+    println!("Generating test trajectories for Mersenne numbers...");
+    let test_starts = vec![3u64, 7u64, 15u64, 31u64, 63u64];
     let mut trajectories = Vec::new();
 
     for &start in &test_starts {

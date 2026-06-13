@@ -168,6 +168,52 @@ impl CollatzHackerModel {
 
         Ok((x_t_recon, x_next_recon, z_t_pred, z_next, z_t))
     }
+
+    /// Dịch ngược trọng số của Encoder (Patch 4: Weights Reverse Engineering)
+    /// Tính toán ma trận trọng số hiệu dụng W_eff = W3 * W2 * W1 (kích thước [2, 64])
+    /// để tìm ra các bit đầu vào nào có ảnh hưởng mạnh nhất đến tọa độ latent (X, Y)
+    fn print_weights_analysis(&self) -> Result<()> {
+        let w1 = self.encoder.linear1.weight();
+        let w2 = self.encoder.linear2.weight();
+        let w3 = self.encoder.linear3.weight();
+
+        // W_eff = W3 * W2 * W1
+        // [2, 128] * [128, 128] -> [2, 128]
+        // [2, 128] * [128, 64] -> [2, 64]
+        let w3_w2 = w3.matmul(w2)?;
+        let w_eff = w3_w2.matmul(w1)?;
+
+        let w_eff_vec = w_eff.to_vec2::<f32>()?;
+        let w_x = &w_eff_vec[0]; // Ảnh hưởng lên tọa độ X (trục ngang)
+        let w_y = &w_eff_vec[1]; // Ảnh hưởng lên tọa độ Y (trục dọc)
+
+        println!("\n=== WEIGHTS REVERSE ENGINEERING (LINEAR APPROXIMATION) ===");
+        println!("Phân tích mức độ ảnh hưởng của từng bit nhị phân đầu vào (2^0 -> 2^63) lên không gian ẩn:");
+
+        // Sắp xếp mức độ ảnh hưởng theo trị tuyệt đối giảm dần cho X
+        let mut x_inf: Vec<(usize, f32)> = w_x.iter().enumerate().map(|(i, &w)| (i, w)).collect();
+        x_inf.sort_by(|a, b| b.1.abs().partial_cmp(&a.1.abs()).unwrap());
+
+        // Sắp xếp mức độ ảnh hưởng theo trị tuyệt đối giảm dần cho Y
+        let mut y_inf: Vec<(usize, f32)> = w_y.iter().enumerate().map(|(i, &w)| (i, w)).collect();
+        y_inf.sort_by(|a, b| b.1.abs().partial_cmp(&a.1.abs()).unwrap());
+
+        println!("\nTop 10 bits ảnh hưởng mạnh nhất tới trục X (Trục Đông Nam - Tây Bắc):");
+        for i in 0..10 {
+            let (bit, weight) = x_inf[i];
+            let math_symbol = if bit == 0 { "LSB (Lẻ/Chẵn)".to_string() } else { format!("2^{}", bit) };
+            println!("  Bit {:2} ({:<13}): Trọng số = {:+.6}", bit, math_symbol, weight);
+        }
+
+        println!("\nTop 10 bits ảnh hưởng mạnh nhất tới trục Y (Trục dao động con lắc):");
+        for i in 0..10 {
+            let (bit, weight) = y_inf[i];
+            let math_symbol = if bit == 0 { "LSB (Lẻ/Chẵn)".to_string() } else { format!("2^{}", bit) };
+            println!("  Bit {:2} ({:<13}): Trọng số = {:+.6}", bit, math_symbol, weight);
+        }
+
+        Ok(())
+    }
 }
 
 // --- 3. LOSS FUNCTIONS ---
@@ -421,6 +467,9 @@ fn main() -> Result<()> {
     println!("Saving interactive HTML report to {}", report_path);
     generate_html_report(&report, report_path)?;
     println!("Dashboard successfully created!");
+
+    // Chạy phân tích dịch ngược trọng số
+    model.print_weights_analysis()?;
 
     Ok(())
 }
